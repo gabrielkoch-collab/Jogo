@@ -1,0 +1,1130 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>A Lenda do Herói 2.5D</title>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap');
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      user-select: none;
+      -webkit-user-select: none;
+    }
+
+    html, body {
+      width: 100%;
+      height: 100%;
+      background-color: #050508;
+      overflow: hidden;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      font-family: 'Press Start 2P', monospace;
+    }
+
+    canvas {
+      display: block;
+      image-rendering: pixelated;
+      image-rendering: crisp-edges;
+      box-shadow: 0 0 60px rgba(0, 0, 0, 0.95);
+    }
+  </style>
+</head>
+<body>
+  <canvas id="gameCanvas" width="800" height="600"></canvas>
+
+  <script>
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+
+    function resizeCanvas() {
+      const targetRatio = 800 / 600;
+      const windowRatio = window.innerWidth / window.innerHeight;
+      let width, height;
+      if (windowRatio < targetRatio) {
+        width = window.innerWidth;
+        height = width / targetRatio;
+      } else {
+        height = window.innerHeight;
+        width = height * targetRatio;
+      }
+      canvas.style.width = `${width}px`;
+      canvas.style.height = `${height}px`;
+    }
+    window.addEventListener('resize', resizeCanvas);
+    resizeCanvas();
+
+    // ==========================================
+    // 1. SINTETIZADOR DE ÁUDIO RETRO (WEB AUDIO)
+    // ==========================================
+    class SoundFX {
+      constructor() {
+        this.ctx = null;
+      }
+      init() {
+        if (!this.ctx) {
+          this.ctx = new (window.AudioContext || window.webkitAudioContext)();
+        }
+        if (this.ctx.state === 'suspended') this.ctx.resume();
+      }
+      playTone(freq, type, duration, vol = 0.12, slideTo = null) {
+        if (!this.ctx) return;
+        const osc = this.ctx.createOscillator();
+        const gain = this.ctx.createGain();
+        osc.type = type;
+        osc.frequency.setValueAtTime(freq, this.ctx.currentTime);
+        if (slideTo) {
+          osc.frequency.exponentialRampToValueAtTime(slideTo, this.ctx.currentTime + duration);
+        }
+        gain.gain.setValueAtTime(vol, this.ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.001, this.ctx.currentTime + duration);
+        osc.connect(gain);
+        gain.connect(this.ctx.destination);
+        osc.start();
+        osc.stop(this.ctx.currentTime + duration);
+      }
+      sword() {
+        this.init();
+        this.playTone(520, 'sawtooth', 0.08, 0.12, 180);
+        setTimeout(() => this.playTone(320, 'square', 0.07, 0.08, 120), 30);
+      }
+      boomerang() {
+        this.init();
+        this.playTone(620, 'triangle', 0.12, 0.12, 880);
+      }
+      shieldBlock() {
+        this.init();
+        this.playTone(900, 'square', 0.06, 0.15, 1300);
+        setTimeout(() => this.playTone(1200, 'triangle', 0.08, 0.12, 600), 40);
+      }
+      hitEnemy() {
+        this.init();
+        this.playTone(210, 'square', 0.09, 0.16, 75);
+      }
+      hurt() {
+        this.init();
+        this.playTone(170, 'sawtooth', 0.18, 0.18, 55);
+      }
+      rupee() {
+        this.init();
+        this.playTone(987, 'square', 0.07, 0.1);
+        setTimeout(() => this.playTone(1318, 'square', 0.14, 0.1), 65);
+      }
+      heart() {
+        this.init();
+        this.playTone(523, 'triangle', 0.08, 0.12);
+        setTimeout(() => this.playTone(659, 'triangle', 0.08, 0.12), 70);
+        setTimeout(() => this.playTone(784, 'triangle', 0.14, 0.12), 140);
+      }
+      secret() {
+        this.init();
+        const notes = [392, 370, 311, 220, 207, 330, 415, 523];
+        notes.forEach((n, i) => {
+          setTimeout(() => this.playTone(n, 'triangle', 0.12, 0.12), i * 85);
+        });
+      }
+      dragonRoar() {
+        this.init();
+        this.playTone(110, 'sawtooth', 0.35, 0.2, 42);
+        setTimeout(() => this.playTone(85, 'square', 0.3, 0.16, 35), 100);
+      }
+      victory() {
+        this.init();
+        const notes = [523, 523, 523, 523, 415, 466, 523, 466, 523];
+        const times = [0, 130, 260, 390, 620, 820, 1020, 1200, 1350];
+        notes.forEach((n, i) => {
+          setTimeout(() => this.playTone(n, 'square', 0.18, 0.14), times[i]);
+        });
+      }
+    }
+    const sfx = new SoundFX();
+
+    // ==========================================
+    // 2. TEXTURAS PROCEDURAIS DO CHÃO
+    // ==========================================
+    const tileTextures = {};
+    function createTileTexture(key, drawFn) {
+      const c = document.createElement('canvas');
+      c.width = 40;
+      c.height = 40;
+      const tctx = c.getContext('2d');
+      drawFn(tctx, 40, 40);
+      tileTextures[key] = c;
+    }
+
+    function initTextures() {
+      // Grama 2.5D iluminada
+      createTileTexture('grass', (c) => {
+        c.fillStyle = '#338838';
+        c.fillRect(0, 0, 40, 40);
+        c.fillStyle = '#3e9c43';
+        c.fillRect(4, 6, 4, 4);
+        c.fillRect(24, 18, 4, 4);
+        c.fillRect(14, 30, 4, 4);
+        c.fillStyle = '#27702c';
+        c.fillRect(8, 12, 2, 4);
+        c.fillRect(30, 8, 2, 4);
+        c.fillRect(20, 32, 2, 4);
+      });
+
+      // Caminho de Terra com relevo
+      createTileTexture('path', (c) => {
+        c.fillStyle = '#c89e64';
+        c.fillRect(0, 0, 40, 40);
+        c.fillStyle = '#d8b077';
+        c.fillRect(4, 4, 10, 6);
+        c.fillRect(22, 20, 12, 8);
+        c.fillStyle = '#a87d48';
+        c.fillRect(6, 26, 6, 4);
+        c.fillRect(28, 8, 5, 4);
+      });
+
+      // Piso de Masmorra (Lajes de Pedra)
+      createTileTexture('dungeon_floor', (c) => {
+        c.fillStyle = '#333b4d';
+        c.fillRect(0, 0, 40, 40);
+        c.fillStyle = '#3d475c';
+        c.fillRect(2, 2, 17, 17);
+        c.fillRect(21, 21, 17, 17);
+        c.fillStyle = '#2b3242';
+        c.fillRect(21, 2, 17, 17);
+        c.fillRect(2, 21, 17, 17);
+        c.fillStyle = '#4c5770';
+        c.fillRect(2, 2, 17, 2);
+        c.fillRect(21, 21, 17, 2);
+      });
+
+      // Piso do Trono do Dragão
+      createTileTexture('boss_floor', (c) => {
+        c.fillStyle = '#381e28';
+        c.fillRect(0, 0, 40, 40);
+        c.fillStyle = '#4a2634';
+        c.fillRect(2, 2, 36, 36);
+        c.fillStyle = '#5e3042';
+        c.fillRect(2, 2, 36, 2);
+        c.fillStyle = '#26121a';
+        c.fillRect(10, 10, 20, 20);
+      });
+
+      // Água Profunda
+      createTileTexture('water', (c) => {
+        c.fillStyle = '#1e68b8';
+        c.fillRect(0, 0, 40, 40);
+        c.fillStyle = '#3488db';
+        c.fillRect(6, 10, 12, 2);
+        c.fillRect(22, 26, 12, 2);
+      });
+    }
+    initTextures();
+
+    // ==========================================
+    // 3. ESTADO DO JOGO & CÂMERA 2.5D
+    // ==========================================
+    const TILE = 40;
+    const COLS = 20;
+    const ROWS = 13;
+    const HUD_H = 80;
+
+    let gameState = 'TITLE'; // TITLE, PLAYING, PAUSED, GAMEOVER, VICTORY
+    let screenShake = 0;
+    let hitStop = 0;
+    let globalTime = 0;
+    let particles = [];
+    let floatingTexts = [];
+    let dialogue = null;
+
+    const keys = {};
+    window.addEventListener('keydown', (e) => {
+      const k = e.key.toLowerCase();
+      if (['arrowup', 'arrowdown', 'arrowleft', 'arrowright', ' '].includes(k)) {
+        e.preventDefault();
+      }
+
+      if (gameState === 'TITLE' && (k === 'enter' || k === ' ' || k === 'z')) {
+        sfx.init();
+        startNewGame();
+        return;
+      }
+
+      if ((gameState === 'GAMEOVER' || gameState === 'VICTORY') && (k === 'enter' || k === 'r')) {
+        startNewGame();
+        return;
+      }
+
+      if (k === 'escape' || k === 'p') {
+        if (gameState === 'PLAYING') {
+          gameState = 'PAUSED';
+        } else if (gameState === 'PAUSED') {
+          gameState = 'PLAYING';
+        }
+        return;
+      }
+
+      if (dialogue && (k === ' ' || k === 'z' || k === 'enter')) {
+        dialogue = null;
+        return;
+      }
+
+      if (!keys[k] && gameState === 'PLAYING' && !dialogue) {
+        if (k === 'z' || k === ' ') heroAttack();
+        if (k === 'x' || k === 'shift') heroThrowBoomerang();
+      }
+
+      keys[k] = true;
+    });
+
+    window.addEventListener('keyup', (e) => {
+      keys[e.key.toLowerCase()] = false;
+    });
+
+    canvas.addEventListener('mousedown', () => {
+      sfx.init();
+      if (gameState === 'TITLE') startNewGame();
+      else if (gameState === 'GAMEOVER' || gameState === 'VICTORY') startNewGame();
+      else if (dialogue) dialogue = null;
+      else if (gameState === 'PLAYING') heroAttack();
+    });
+
+    // ==========================================
+    // 4. MAPA DO MUNDO 2.5D (6 SALAS INTERLIGADAS)
+    // ==========================================
+    // Legenda de Tiles:
+    // . = grama | p = caminho | T = árvore 2.5D | W = água | B = arbusto cortável
+    // # = parede 2.5D masmorra | _ = piso masmorra | * = piso sala do chefe
+    // D = porta trancada | G = lápide | P = pote quebrável | S = placa
+    const WORLD_DATA = {
+      '0,1': {
+        name: 'VILA KAKARIKO',
+        theme: 'overworld',
+        map: [
+          'TTTTTTTTTppTTTTTTTTT',
+          'T........pp........T',
+          'T..BB....pp....BB..T',
+          'T..BB...pppp...BB..T',
+          'T......pppppp......T',
+          'T..S...pppppp...P..p',
+          'T......pppppp......p',
+          'T......pppppp......p',
+          'T...WWWWppppWWWW...T',
+          'T...WWWWppppWWWW...T',
+          'T........pp........T',
+          'T........pp........T',
+          'TTTTTTTTTTTTTTTTTTTT'
+        ],
+        enemies: [
+          { type: 'slime', x: 180, y: 180 },
+          { type: 'slime', x: 600, y: 200 }
+        ],
+        chests: [],
+        sign: 'NORTE: ENTRADA DO TEMPLO | LESTE: BOSQUE SOMBRIO'
+      },
+      '1,1': {
+        name: 'BOSQUE DAS ARANHAS',
+        theme: 'overworld',
+        map: [
+          'TTTTTTTTTTTTTTTTTTTT',
+          'T....T........T....T',
+          'T..BB....BB....BB..T',
+          'T........TT........T',
+          'T...G..........G...T',
+          'p........TT........T',
+          'p...BB........BB...T',
+          'p........TT........T',
+          'T...G..........G...T',
+          'T........TT........T',
+          'T..BB....BB....BB..T',
+          'T..................T',
+          'TTTTTTTTTTTTTTTTTTTT'
+        ],
+        enemies: [
+          { type: 'spider', x: 340, y: 160 },
+          { type: 'spider', x: 560, y: 340 },
+          { type: 'slime', x: 460, y: 240 }
+        ],
+        chests: [
+          { id: 'key_temple', x: 680, y: 240, item: 'key', opened: false }
+        ]
+      },
+      '0,0': {
+        name: 'PORTÃO DO TEMPLO',
+        theme: 'overworld',
+        map: [
+          'TTTTTTTT#DD#TTTTTTTT',
+          'T.......#__#.......T',
+          'T..TT...pppp...TT..T',
+          'T.......pppp.......T',
+          'T..P....pppp....P..T',
+          'T.......pppp.......T',
+          'T..BB...pppp...BB..T',
+          'T.......pppp.......T',
+          'T.......pppp.......T',
+          'T..G....pppp....G..T',
+          'T.......pppp.......T',
+          'T........pp........T',
+          'TTTTTTTTTppTTTTTTTTT'
+        ],
+        enemies: [
+          { type: 'knight', x: 240, y: 220 },
+          { type: 'knight', x: 540, y: 220 }
+        ],
+        chests: [
+          { id: 'heart_overworld', x: 120, y: 120, item: 'heart_container', opened: false }
+        ]
+      },
+      '0,-1': {
+        name: 'SALA DO SANTUÁRIO',
+        theme: 'dungeon',
+        map: [
+          '########____########',
+          '#__________________#',
+          '#__P____________P__#',
+          '#______#____#______#',
+          '#__________________#',
+          '#__________________#',
+          '#______#____#______#',
+          '#__________________#',
+          '#__P____________P__#',
+          '#__________________#',
+          '#__________________#',
+          '#________##________#',
+          '########____########'
+        ],
+        enemies: [
+          { type: 'spider', x: 220, y: 180 },
+          { type: 'spider', x: 560, y: 180 },
+          { type: 'knight', x: 400, y: 140 }
+        ],
+        chests: []
+      },
+      '0,-2': {
+        name: 'COVIL DO DRAGÃO',
+        theme: 'boss',
+        map: [
+          '####################',
+          '#******************#',
+          '#******************#',
+          '#***#**********#***#',
+          '#******************#',
+          '#******************#',
+          '#******************#',
+          '#******************#',
+          '#***#**********#***#',
+          '#******************#',
+          '#******************#',
+          '#******************#',
+          '########____########'
+        ],
+        enemies: [
+          { type: 'dragon', x: 400, y: 150 }
+        ],
+        chests: []
+      }
+    };
+
+    let worldState = {};
+    let currentRoomKey = '0,1';
+    let roomEnemies = [];
+    let roomDrops = [];
+    let projectiles = [];
+    let boomerang = null;
+
+    // ==========================================
+    // 5. HERÓI (LINK 2.5D)
+    // ==========================================
+    const hero = {
+      x: 400,
+      y: 340,
+      w: 24,
+      h: 24,
+      speed: 3.2,
+      dir: 'down', // up, down, left, right
+      hp: 6,
+      maxHp: 6,
+      rupees: 0,
+      keys: 0,
+      hasTriforce: false,
+      isMoving: false,
+      walkTimer: 0,
+      walkFrame: 0,
+      attackTimer: 0,
+      attackCooldown: 0,
+      invulnTimer: 0,
+      knockbackX: 0,
+      knockbackY: 0,
+      isGuarding: false,
+      swordHitEnemies: new Set()
+    };
+
+    function cloneWorld() {
+      worldState = JSON.parse(JSON.stringify(WORLD_DATA));
+    }
+
+    function loadRoom(key) {
+      currentRoomKey = key;
+      const room = worldState[key];
+      roomEnemies = room.enemies.map((e, idx) => createEnemy(e.type, e.x, e.y, idx));
+      roomDrops = [];
+      projectiles = [];
+      boomerang = null;
+      particles = [];
+    }
+
+    function createEnemy(type, x, y, id) {
+      if (type === 'slime') {
+        return {
+          id, type, x, y, w: 26, h: 22, hp: 2, maxHp: 2,
+          speed: 1.1, timer: Math.random() * 100, hitTimer: 0, stunTimer: 0,
+          kx: 0, ky: 0, bounce: 0
+        };
+      }
+      if (type === 'spider') {
+        return {
+          id, type, x, y, w: 30, h: 26, hp: 3, maxHp: 3,
+          speed: 1.7, timer: Math.random() * 100, shootTimer: 90,
+          hitTimer: 0, stunTimer: 0, kx: 0, ky: 0, legPhase: 0
+        };
+      }
+      if (type === 'knight') {
+        return {
+          id, type, x, y, w: 28, h: 28, hp: 4, maxHp: 4,
+          speed: 1.4, dir: 'down', timer: 0, hitTimer: 0, stunTimer: 0,
+          kx: 0, ky: 0
+        };
+      }
+      if (type === 'dragon') {
+        return {
+          id, type, x, y, w: 84, h: 64, hp: 24, maxHp: 24,
+          speed: 1.35, dir: 1, timer: 0, attackTimer: 75,
+          hitTimer: 0, stunTimer: 0, wingPhase: 0, phase2: false
+        };
+      }
+    }
+
+    function startNewGame() {
+      cloneWorld();
+      hero.x = 400;
+      hero.y = 320;
+      hero.dir = 'down';
+      hero.hp = 6;
+      hero.maxHp = 6;
+      hero.rupees = 0;
+      hero.keys = 0;
+      hero.hasTriforce = false;
+      hero.attackTimer = 0;
+      hero.invulnTimer = 0;
+      hero.knockbackX = 0;
+      hero.knockbackY = 0;
+      dialogue = null;
+      loadRoom('0,1');
+      gameState = 'PLAYING';
+    }
+
+    // ==========================================
+    // 6. MECÂNICAS DE COMBATE & INTERAÇÃO
+    // ==========================================
+    function heroAttack() {
+      if (hero.attackTimer > 0 || hero.attackCooldown > 0) return;
+      hero.attackTimer = 14;
+      hero.attackCooldown = 18;
+      hero.isGuarding = false;
+      hero.swordHitEnemies.clear();
+      sfx.sword();
+
+      // Interagir com baús ou placas à frente
+      const reach = 34;
+      let fx = hero.x + hero.w / 2;
+      let fy = hero.y + hero.h / 2;
+      if (hero.dir === 'up') fy -= reach;
+      if (hero.dir === 'down') fy += reach;
+      if (hero.dir === 'left') fx -= reach;
+      if (hero.dir === 'right') fx += reach;
+
+      const room = worldState[currentRoomKey];
+
+      // Verificar Baús
+      for (const chest of room.chests) {
+        if (!chest.opened && Math.hypot(fx - (chest.x + 16), fy - (chest.y + 14)) < 36) {
+          chest.opened = true;
+          sfx.secret();
+          spawnParticles(chest.x + 16, chest.y + 10, '#ffd700', 18);
+          if (chest.item === 'key') {
+            hero.keys++;
+            dialogue = 'VOCÊ ENCONTROU A CHAVE DO TEMPLO!';
+          } else if (chest.item === 'heart_container') {
+            hero.maxHp += 2;
+            hero.hp = hero.maxHp;
+            dialogue = 'RECIPIENTE DE CORAÇÃO! VIDA MÁXIMA AUMENTADA!';
+          }
+          return;
+        }
+      }
+
+      // Verificar Placa
+      const tx = Math.floor(fx / TILE);
+      const ty = Math.floor(fy / TILE);
+      if (ty >= 0 && ty < ROWS && tx >= 0 && tx < COLS) {
+        const tile = room.map[ty][tx];
+        if (tile === 'S' && room.sign) {
+          dialogue = room.sign;
+          return;
+        }
+        if (tile === 'D') {
+          if (hero.keys > 0) {
+            hero.keys--;
+            replaceTile(room, tx, ty, '_');
+            sfx.secret();
+            screenShake = 8;
+            dialogue = 'A PORTA DO TEMPLO FOI DESTRANCADA!';
+          } else {
+            dialogue = 'TRANCADA! PROCURE A CHAVE NO BOSQUE A LESTE.';
+          }
+          return;
+        }
+      }
+    }
+
+    function heroThrowBoomerang() {
+      if (boomerang || hero.attackTimer > 0) return;
+      sfx.boomerang();
+      let vx = 0, vy = 0;
+      const spd = 6.5;
+      if (hero.dir === 'up') vy = -spd;
+      if (hero.dir === 'down') vy = spd;
+      if (hero.dir === 'left') vx = -spd;
+      if (hero.dir === 'right') vx = spd;
+
+      boomerang = {
+        x: hero.x + hero.w / 2,
+        y: hero.y + hero.h / 2,
+        vx, vy,
+        timer: 0,
+        returning: false,
+        angle: 0
+      };
+    }
+
+    function replaceTile(room, tx, ty, newChar) {
+      const row = room.map[ty];
+      room.map[ty] = row.substring(0, tx) + newChar + row.substring(tx + 1);
+    }
+
+    function getSwordArcBox() {
+      const cx = hero.x + hero.w / 2;
+      const cy = hero.y + hero.h / 2;
+      if (hero.dir === 'up') return { x: cx - 28, y: cy - 42, w: 56, h: 36 };
+      if (hero.dir === 'down') return { x: cx - 28, y: cy + 6, w: 56, h: 36 };
+      if (hero.dir === 'left') return { x: cx - 42, y: cy - 28, w: 36, h: 56 };
+      return { x: cx + 6, y: cy - 28, w: 36, h: 56 };
+    }
+
+    function rectsOverlap(a, b) {
+      return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+    }
+
+    function isTileSolid(tile) {
+      return ['T', 'W', 'B', '#', 'D', 'G', 'P', 'S'].includes(tile);
+    }
+
+    function canMoveTo(x, y, w, h) {
+      const room = worldState[currentRoomKey];
+      const corners = [
+        { x: x + 3, y: y + 4 },
+        { x: x + w - 3, y: y + 4 },
+        { x: x + 3, y: y + h - 2 },
+        { x: x + w - 3, y: y + h - 2 }
+      ];
+      for (const c of corners) {
+        const tx = Math.floor(c.x / TILE);
+        const ty = Math.floor(c.y / TILE);
+        if (tx < 0 || tx >= COLS || ty < 0 || ty >= ROWS) continue;
+        if (isTileSolid(room.map[ty][tx])) return false;
+      }
+      // Colisão com baús fechados
+      for (const chest of room.chests) {
+        if (rectsOverlap({ x, y, w, h }, { x: chest.x + 2, y: chest.y + 4, w: 28, h: 22 })) {
+          return false;
+        }
+      }
+      return true;
+    }
+
+    function damageHero(amount, sourceX, sourceY) {
+      if (hero.invulnTimer > 0) return;
+
+      // Verificar bloqueio frontal com Escudo Hyliano
+      if (hero.isGuarding) {
+        const dx = sourceX - (hero.x + hero.w / 2);
+        const dy = sourceY - (hero.y + hero.h / 2);
+        let blocked = false;
+        if (hero.dir === 'up' && dy < -4) blocked = true;
+        if (hero.dir === 'down' && dy > 4) blocked = true;
+        if (hero.dir === 'left' && dx < -4) blocked = true;
+        if (hero.dir === 'right' && dx > 4) blocked = true;
+
+        if (blocked) {
+          sfx.shieldBlock();
+          screenShake = 5;
+          spawnParticles(hero.x + hero.w / 2, hero.y + hero.h / 2, '#66ccff', 10);
+          const angle = Math.atan2(hero.y - sourceY, hero.x - sourceX);
+          hero.knockbackX = Math.cos(angle) * 4;
+          hero.knockbackY = Math.sin(angle) * 4;
+          hero.invulnTimer = 20;
+          return;
+        }
+      }
+
+      hero.hp = Math.max(0, hero.hp - amount);
+      hero.invulnTimer = 55;
+      screenShake = 10;
+      hitStop = 3;
+      sfx.hurt();
+      spawnParticles(hero.x + hero.w / 2, hero.y + hero.h / 2, '#ff3333', 14);
+
+      const angle = Math.atan2(hero.y - sourceY, hero.x - sourceX);
+      hero.knockbackX = Math.cos(angle) * 7.5;
+      hero.knockbackY = Math.sin(angle) * 7.5;
+
+      if (hero.hp <= 0) {
+        gameState = 'GAMEOVER';
+      }
+    }
+
+    function spawnParticles(x, y, color, count) {
+      for (let i = 0; i < count; i++) {
+        const angle = Math.random() * Math.PI * 2;
+        const speed = 1 + Math.random() * 3.5;
+        particles.push({
+          x, y,
+          vx: Math.cos(angle) * speed,
+          vy: Math.sin(angle) * speed,
+          life: 18 + Math.random() * 14,
+          maxLife: 32,
+          color,
+          size: 2 + Math.random() * 3
+        });
+      }
+    }
+
+    function spawnDrop(x, y) {
+      const r = Math.random();
+      if (r < 0.45) {
+        roomDrops.push({ x, y, type: 'rupee', value: r < 0.1 ? 5 : 1, life: 600 });
+      } else if (r < 0.7) {
+        roomDrops.push({ x, y, type: 'heart', value: 2, life: 600 });
+      }
+    }
+
+    // ==========================================
+    // 7. ATUALIZAÇÃO DA LÓGICA (UPDATE)
+    // ==========================================
+    function update() {
+      globalTime++;
+      if (screenShake > 0) screenShake *= 0.82;
+      if (screenShake < 0.3) screenShake = 0;
+
+      if (gameState !== 'PLAYING' || dialogue) return;
+      if (hitStop > 0) {
+        hitStop--;
+        return;
+      }
+
+      // Escudo (C ou Control)
+      hero.isGuarding = Boolean((keys['c'] || keys['control']) && hero.attackTimer <= 0);
+
+      // Cooldowns do herói
+      if (hero.attackTimer > 0) hero.attackTimer--;
+      if (hero.attackCooldown > 0) hero.attackCooldown--;
+      if (hero.invulnTimer > 0) hero.invulnTimer--;
+
+      // Knockback do herói
+      if (Math.hypot(hero.knockbackX, hero.knockbackY) > 0.3) {
+        if (canMoveTo(hero.x + hero.knockbackX, hero.y, hero.w, hero.h)) hero.x += hero.knockbackX;
+        if (canMoveTo(hero.x, hero.y + hero.knockbackY, hero.w, hero.h)) hero.y += hero.knockbackY;
+        hero.knockbackX *= 0.8;
+        hero.knockbackY *= 0.8;
+      } else {
+        // Movimentação do herói
+        let dx = 0, dy = 0;
+        if (keys['arrowup'] || keys['w']) dy -= 1;
+        if (keys['arrowdown'] || keys['s']) dy += 1;
+        if (keys['arrowleft'] || keys['a']) dx -= 1;
+        if (keys['arrowright'] || keys['d']) dx += 1;
+
+        if (dx !== 0 && dy !== 0) {
+          dx *= 0.7071;
+          dy *= 0.7071;
+        }
+
+        const moveSpd = hero.isGuarding ? hero.speed * 0.55 : hero.speed;
+        hero.isMoving = (dx !== 0 || dy !== 0);
+
+        if (hero.isMoving) {
+          if (hero.attackTimer <= 0) {
+            if (Math.abs(dx) > Math.abs(dy)) {
+              hero.dir = dx < 0 ? 'left' : 'right';
+            } else {
+              hero.dir = dy < 0 ? 'up' : 'down';
+            }
+          }
+
+          if (canMoveTo(hero.x + dx * moveSpd, hero.y, hero.w, hero.h)) {
+            hero.x += dx * moveSpd;
+          }
+          if (canMoveTo(hero.x, hero.y + dy * moveSpd, hero.w, hero.h)) {
+            hero.y += dy * moveSpd;
+          }
+
+          hero.walkTimer++;
+          if (hero.walkTimer >= 7) {
+            hero.walkTimer = 0;
+            hero.walkFrame = (hero.walkFrame + 1) % 4;
+          }
+        } else {
+          hero.walkFrame = 0;
+        }
+      }
+
+      // Transição entre Salas
+      const [rx, ry] = currentRoomKey.split(',').map(Number);
+      if (hero.x < -8) {
+        const next = `${rx - 1},${ry}`;
+        if (worldState[next]) { hero.x = COLS * TILE - hero.w - 12; loadRoom(next); }
+      } else if (hero.x + hero.w > COLS * TILE + 8) {
+        const next = `${rx + 1},${ry}`;
+        if (worldState[next]) { hero.x = 12; loadRoom(next); }
+      } else if (hero.y < -8) {
+        const next = `${rx},${ry - 1}`;
+        if (worldState[next]) { hero.y = ROWS * TILE - hero.h - 12; loadRoom(next); }
+      } else if (hero.y + hero.h > ROWS * TILE + 8) {
+        const next = `${rx},${ry + 1}`;
+        if (worldState[next]) { hero.y = 12; loadRoom(next); }
+      }
+
+      // Ataque de Espada (Cortar arbustos/potes & atingir inimigos)
+      if (hero.attackTimer > 0) {
+        const swordBox = getSwordArcBox();
+        const room = worldState[currentRoomKey];
+
+        // Cortar arbustos e quebrar potes
+        const minTx = Math.max(0, Math.floor(swordBox.x / TILE));
+        const maxTx = Math.min(COLS - 1, Math.floor((swordBox.x + swordBox.w) / TILE));
+        const minTy = Math.max(0, Math.floor(swordBox.y / TILE));
+        const maxTy = Math.min(ROWS - 1, Math.floor((swordBox.y + swordBox.h) / TILE));
+
+        for (let ty = minTy; ty <= maxTy; ty++) {
+          for (let tx = minTx; tx <= maxTx; tx++) {
+            const tile = room.map[ty][tx];
+            if (tile === 'B' || tile === 'P') {
+              const replacement = room.theme === 'overworld' ? '.' : '_';
+              replaceTile(room, tx, ty, replacement);
+              sfx.hitEnemy();
+              spawnParticles(tx * TILE + 20, ty * TILE + 20, tile === 'B' ? '#44bb44' : '#c87d4b', 12);
+              spawnDrop(tx * TILE + 12, ty * TILE + 12);
+            }
+          }
+        }
+
+        // Acertar inimigos
+        for (const e of roomEnemies) {
+          if (!hero.swordHitEnemies.has(e.id) && rectsOverlap(swordBox, e)) {
+            hero.swordHitEnemies.add(e.id);
+            damageEnemy(e, 1, hero.x + hero.w / 2, hero.y + hero.h / 2);
+          }
+        }
+      }
+
+      // Atualizar Bumerangue
+      if (boomerang) {
+        boomerang.angle += 0.45;
+        boomerang.timer++;
+        if (boomerang.timer > 22) boomerang.returning = true;
+
+        if (boomerang.returning) {
+          const tx = hero.x + hero.w / 2;
+          const ty = hero.y + hero.h / 2;
+          const angle = Math.atan2(ty - boomerang.y, tx - boomerang.x);
+          boomerang.x += Math.cos(angle) * 7.2;
+          boomerang.y += Math.sin(angle) * 7.2;
+          if (Math.hypot(tx - boomerang.x, ty - boomerang.y) < 18) {
+            boomerang = null;
+          }
+        } else {
+          boomerang.x += boomerang.vx;
+          boomerang.y += boomerang.vy;
+          // Bater em parede sólida retorna
+          const btx = Math.floor(boomerang.x / TILE);
+          const bty = Math.floor(boomerang.y / TILE);
+          if (btx < 0 || btx >= COLS || bty < 0 || bty >= ROWS || isTileSolid(worldState[currentRoomKey].map[bty][btx])) {
+            boomerang.returning = true;
+          }
+        }
+
+        if (boomerang) {
+          // Atordoar inimigos com bumerangue
+          for (const e of roomEnemies) {
+            if (rectsOverlap({ x: boomerang.x - 10, y: boomerang.y - 10, w: 20, h: 20 }, e)) {
+              if (e.type !== 'dragon') {
+                e.stunTimer = 90;
+                sfx.hitEnemy();
+                spawnParticles(e.x + e.w / 2, e.y + e.h / 2, '#ffff66', 6);
+              }
+              boomerang.returning = true;
+            }
+          }
+          // Coletar itens no caminho
+          for (const d of roomDrops) {
+            if (Math.hypot(boomerang.x - d.x, boomerang.y - d.y) < 24) {
+              d.x = hero.x + hero.w / 2;
+              d.y = hero.y + hero.h / 2;
+            }
+          }
+        }
+      }
+
+      // Atualizar Inimigos
+      for (let i = roomEnemies.length - 1; i >= 0; i--) {
+        const e = roomEnemies[i];
+        if (e.hitTimer > 0) e.hitTimer--;
+        if (e.stunTimer > 0) {
+          e.stunTimer--;
+          continue;
+        }
+
+        if (e.type !== 'dragon' && Math.hypot(e.kx, e.ky) > 0.3) {
+          if (canMoveTo(e.x + e.kx, e.y, e.w, e.h)) e.x += e.kx;
+          if (canMoveTo(e.x, e.y + e.ky, e.w, e.h)) e.y += e.ky;
+          e.kx *= 0.78;
+          e.ky *= 0.78;
+        } else {
+          updateEnemyAI(e);
+        }
+
+        // Contato com Herói
+        if (rectsOverlap(hero, e)) {
+          damageHero(e.type === 'dragon' ? 2 : 1, e.x + e.w / 2, e.y + e.h / 2);
+        }
+      }
+
+      // Atualizar Projéteis Inimigos (Teias de Aranha e Bolas de Fogo do Dragão)
+      for (let i = projectiles.length - 1; i >= 0; i--) {
+        const p = projectiles[i];
+        p.x += p.vx;
+        p.y += p.vy;
+        p.life--;
+
+        if (p.type === 'fire') {
+          spawnParticles(p.x, p.y, '#ff8800', 1);
+        }
+
+        // Colisão com herói
+        if (rectsOverlap(hero, { x: p.x - p.r, y: p.y - p.r, w: p.r * 2, h: p.r * 2 })) {
+          damageHero(p.damage, p.x - p.vx * 4, p.y - p.vy * 4);
+          projectiles.splice(i, 1);
+          continue;
+        }
+
+        // Colisão com paredes
+        const ptx = Math.floor(p.x / TILE);
+        const pty = Math.floor(p.y / TILE);
+        if (p.life <= 0 || ptx < 0 || ptx >= COLS || pty < 0 || pty >= ROWS || isTileSolid(worldState[currentRoomKey].map[pty][ptx])) {
+          spawnParticles(p.x, p.y, p.type === 'fire' ? '#ff5500' : '#eeeeee', 6);
+          projectiles.splice(i, 1);
+        }
+      }
+
+      // Atualizar Drops (Rupees, Corações, Triforce)
+      for (let i = roomDrops.length - 1; i >= 0; i--) {
+        const d = roomDrops[i];
+        if (d.type !== 'triforce') {
+          d.life--;
+          if (d.life <= 0) {
+            roomDrops.splice(i, 1);
+            continue;
+          }
+        }
+        if (rectsOverlap(hero, { x: d.x - 4, y: d.y - 4, w: 24, h: 24 })) {
+          if (d.type === 'rupee') {
+            hero.rupees += d.value;
+            sfx.rupee();
+          } else if (d.type === 'heart') {
+            hero.hp = Math.min(hero.maxHp, hero.hp + d.value);
+            sfx.heart();
+          } else if (d.type === 'triforce') {
+            hero.hasTriforce = true;
+            sfx.victory();
+            gameState = 'VICTORY';
+          }
+          roomDrops.splice(i, 1);
+        }
+      }
+
+      // Atualizar Partículas
+      for (let i = particles.length - 1; i >= 0; i--) {
+        const pt = particles[i];
+        pt.x += pt.vx;
+        pt.y += pt.vy;
+        pt.life--;
+        if (pt.life <= 0) particles.splice(i, 1);
+      }
+    }
+
+    function updateEnemyAI(e) {
+      const dist = Math.hypot(hero.x - e.x, hero.y - e.y);
+
+      if (e.type === 'slime') {
+        e.timer++;
+        e.bounce = Math.abs(Math.sin(e.timer * 0.12)) * 5;
+        if (dist < 240) {
+          const angle = Math.atan2(hero.y - e.y, hero.x - e.x);
+          const vx = Math.cos(angle) * e.speed;
+          const vy = Math.sin(angle) * e.speed;
+          if (canMoveTo(e.x + vx, e.y, e.w, e.h)) e.x += vx;
+          if (canMoveTo(e.x, e.y + vy, e.w, e.h)) e.y += vy;
+        }
+      }
+
+      if (e.type === 'spider') {
+        e.timer++;
+        e.legPhase += 0.28;
+        e.shootTimer--;
+        // Movimento errático rápido estilo aranha
+        if (e.timer % 35 === 0) {
+          const angle = dist < 300
+            ? Math.atan2(hero.y - e.y, hero.x - e.x) + (Math.random() - 0.5) * 1.1
+            : Math.random() * Math.PI * 2;
+          e.mvx = Math.cos(angle) * e.speed;
+          e.mvy = Math.sin(angle) * e.speed;
+        }
+        if (e.mvx && canMoveTo(e.x + e.mvx, e.y, e.w, e.h)) e.x += e.mvx;
+        if (e.mvy && canMoveTo(e.x, e.y + e.mvy, e.w, e.h)) e.y += e.mvy;
+
+        // Dispara teia de aranha
+        if (e.shootTimer <= 0 && dist < 340) {
+          e.shootTimer = 115;
+          const angle = Math.atan2((hero.y + 12) - (e.y + 13), (hero.x + 12) - (e.x + 15));
+          projectiles.push({
+            x: e.x + 15, y: e.y + 13,
+            vx: Math.cos(angle) * 3.6,
+            vy: Math.sin(angle) * 3.6,
+            r: 6, type: 'web', damage: 1, life: 130
+          });
+        }
+      }
+
+      if (e.type === 'knight') {
+        e.timer++;
+        const spd = dist < 210 ? e.speed * 1.35 : e.speed * 0.7;
+        const angle = dist < 250
+          ? Math.atan2(hero.y - e.y, hero.x - e.x)
+          : Math.floor(e.timer / 60) * (Math.PI / 2);
+        const vx = Math.cos(angle) * spd;
+        const vy = Math.sin(angle) * spd;
+        if (Math.abs(vx) > Math.abs(vy)) e.dir = vx < 0 ? 'left' : 'right';
+        else e.dir = vy < 0 ? 'up' : 'down';
+        if (canMoveTo(e.x + vx, e.y, e.w, e.h)) e.x += vx;
+        if (canMoveTo(e.x, e.y + vy, e.w, e.h)) e.y += vy;
+      }
+
+      if (e.type === 'dragon') {
+        e.timer++;
+        e.wingPhase += e.phase2 ? 0.24 : 0.14;
+        if (e.hp <= e.maxHp / 2 && !e.phase2) {
+          e.phase2 = true;
+          screenShake = 14;
+          sfx.dragonRoar();
+          spawnParticles(e.x + e.w / 2, e.y + e.h / 2, '#ff3300', 25);
+        }
+
+        const spd = e.phase2 ? e.speed * 1.55 : e.speed;
+        e.x += e.dir * spd;
+        if (e.x < 100) e.dir = 1;
+        if (e.x + e.w > COLS * TILE - 100) e.dir = -1;
+        e.y = 115 + Math.sin(e.timer * 0.04) * 28;
+
+        e.attackTimer--;
+        if (e.attackTimer <= 0) {
+          sfx.dragonRoar();
+          const mouthX = e.x + e.w / 2;
+          const mouthY = e.y + e.h - 4;
+          const baseAngle = Math.atan2((hero.y + 12) - mouthY, (hero.x + 12) - mouthX);
+
+          if (!e.phase2) {
+            // Fase 1: Leque de 3 bolas de fogo
+            e.attackTimer = 95;
+            [-0.28, 0, 0.28].forEach((offset) => {
+              projectiles.push({
+                x: mouthX, y: mouthY,
+                vx: Math.cos(baseAngle + offset) * 4.1,
+                vy: Math.sin(baseAngle + offset) * 4.1,
+                r: 8, type: 'fire', damage: 2, life: 150
+              });
+            });
+          } else {
+            // Fase 2 (Fúria): Leque de 5 bolas de fogo velozes
+            e.attackTimer = 68;
+            [-0.42, -0.21, 0, 0.21, 0.42].forEach((offset) => {
+              projectiles.push({
+                x: mouthX, y: mouthY,
+                vx: Math.cos(baseAngle + offset) * 4.9,
+                vy: Math.sin(baseAngle + offset) * 4.9,
+                r: 9, type: 'fire', damage: 2, life: 160
+              });
+            });
+          }
+        }
+      }
+    }
+
+    function damageEnemy(e, dmg, sourceX, sourceY) {
+      e.hp -= dmg;
+      e.hitTimer = 10;
+      hitStop = 3;
+      screenShake = e.type === 'dragon' ? 9 : 5;
+      sfx.hitEnemy();
+      spawnParticles(e.x + e.w / 2, e.y + e.h / 2, '#ffaa00', 10);
+
+      if (e.type !== 'dragon') {
+        const angle = Math.atan2((e.y + e.h / 2) - sourceY, (e.x + e.w / 2) - sourceX);
+        e.kx = Math.cos(angle) * 8;
+        e.ky = Math.sin(angle) * 8;
+      }
+
+      if (e.hp <= 0) {
+        const idx = roomEnemies.indexOf(e);
+        if (idx !== -1) roomEnemies.splice(idx, 1);
+        // Remover permanentemente da sala
+        worldState[currentRoomKey].enemies = worldState[currentRoomKey].enemies.filter((_, i) => i !== idx);
+        spawnParticles(e.x + e.w / 2, e.y + e.h / 2, '#ff4444', e.type === 'dragon' ? 45 : 16);
+
+        if (e.type === 'dragon') {
+          screenShake = 22;
+          sfx.secret();
+          roomDrops.push({
+            x: e.x + e.w / 2 - 12,
+            y: e.y + e.h / 2,
+            type: 'triforce',
+            life: 99999
+          });
+        } else {
+          spawnDrop(e.x + e.w / 2 - 8, e.y + e.h / 2 - 8);
+        }
+      }
+    }
+
+    // ==========================================
+    // 8. RENDERIZAÇÃO 2.5D (Y-SORTING + SOMBRAS)
+    // ==========================================
+    function drawShadow(cx, cy, rx, ry) {
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.34)';
+      ctx.beginPath();
+      ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    function drawFloorAndWalls() {
+      const room = worldState[currentRoomKey];
+      const baseTex = room
